@@ -13,7 +13,7 @@ type TCPTransport struct {
 	deliverAddr string
 }
 
-func NewTCPTransport(listenAddr string, deliverAddr string) (*TCPTransport, error) {
+func NewTCPTransport(listenAddr, deliverAddr string) (*TCPTransport, error) {
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return nil, err
