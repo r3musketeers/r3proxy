@@ -6,6 +6,8 @@ import (
 	"io/ioutil"
 	"log"
 	"net"
+
+	"r3-proxy/proxy"
 )
 
 type TCPTransport struct {
@@ -24,7 +26,7 @@ func NewTCPTransport(listenAddr, deliverAddr string) (*TCPTransport, error) {
 	}, nil
 }
 
-func (t *TCPTransport) Listen(handle func(io.Reader) (io.Reader, error)) error {
+func (t *TCPTransport) Listen(handle proxy.HandlerFunc) error {
 	for {
 		conn, err := t.listener.Accept()
 		if err != nil {

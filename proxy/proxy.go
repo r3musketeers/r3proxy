@@ -9,7 +9,7 @@ import (
 )
 
 type Transporter interface {
-	Listen(func(io.Reader) (io.Reader, error)) error
+	Listen(HandlerFunc) error
 	Deliver(io.Reader) (io.Reader, error)
 }
 
@@ -19,9 +19,9 @@ type Orderer interface {
 }
 
 type R3Proxy struct {
-	transport      Transporter
-	orderer        Orderer
-	pendingClients sync.Map
+	transport Transporter
+	orderer   Orderer
+	clients   sync.Map
 }
 
 func NewR3Proxy(transport Transporter, orderer Orderer) *R3Proxy {
@@ -38,17 +38,18 @@ func (p *R3Proxy) Run() error {
 	}()
 	go func() {
 		for message := range p.orderer.Ordered() {
-			outStream, err := p.transport.Deliver(message.Reader)
-			if err != nil {
+			log.Println("message ordered ", message.ID)
+			respReader, err := p.transport.Deliver(message.Reader)
+			if err != nil || respReader == nil {
 				errCh <- err
 			}
-			respChI, ok := p.pendingClients.Load(message.ID)
+			respChI, ok := p.clients.Load(message.ID)
 			if !ok {
 				log.Println("response for non existing client")
 				continue
 			}
 			respCh := respChI.(chan io.Reader)
-			respCh <- outStream
+			respCh <- respReader
 		}
 	}()
 	return <-errCh
@@ -64,6 +65,7 @@ func (p *R3Proxy) handle(reqReader io.Reader) (io.Reader, error) {
 		return nil, err
 	}
 	respCh := make(chan io.Reader)
-	p.pendingClients.Store(uuidStr, respCh)
+	p.clients.Store(uuidStr, respCh)
+	log.Println("stored client ", uuidStr)
 	return <-respCh, nil
 }

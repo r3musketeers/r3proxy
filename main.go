@@ -10,13 +10,14 @@ import (
 )
 
 func main() {
-	tcpTransport, err := transport.NewTCPTransport(":10000", ":10001")
-	if err != nil {
-		log.Fatal(err.Error())
-	}
+	//tcpTransport, err := transport.NewTCPTransport(":10000", ":10001")
+	//if err != nil {
+	//	log.Fatal(err.Error())
+	//}
+	httpTransport := transport.NewHTTPTransport(":10000", ":10001")
 	delayOrderer := order.NewDelayOrderer(time.Second * 2)
-	r3Proxy := proxy.NewR3Proxy(tcpTransport, delayOrderer)
-	err = r3Proxy.Run()
+	r3Proxy := proxy.NewR3Proxy(httpTransport, delayOrderer)
+	err := r3Proxy.Run()
 	if err != nil {
 		log.Fatal(err.Error())
 	}
