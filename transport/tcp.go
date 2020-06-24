@@ -3,6 +3,7 @@ package transport
 import (
 	"bytes"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 )
@@ -23,17 +24,29 @@ func NewTCPTransport(listenAddr string, deliverAddr string) (*TCPTransport, erro
 	}, nil
 }
 
-func (t *TCPTransport) Listen(handleConn func(net.Conn) error) error {
+func (t *TCPTransport) Listen(handle func(io.Reader) (io.Reader, error)) error {
 	for {
 		conn, err := t.listener.Accept()
 		if err != nil {
 			return err
 		}
 		go func() {
-			err = handleConn(conn)
+			reqPayload, err := ioutil.ReadAll(conn)
+			if err != nil {
+				log.Println(err.Error())
+				return
+			}
+			respReader, err := handle(bytes.NewBuffer(reqPayload))
+			if err != nil {
+				log.Println(err.Error())
+				conn.Close()
+				return
+			}
+			_, err = io.Copy(conn, respReader)
 			if err != nil {
 				log.Println(err.Error())
 			}
+			conn.Close()
 		}()
 	}
 }

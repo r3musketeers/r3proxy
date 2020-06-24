@@ -2,8 +2,8 @@ package order
 
 import (
 	"io"
+	"io/ioutil"
 	"log"
-	"net"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,22 +11,22 @@ import (
 
 type DelayOrderer struct {
 	delay   time.Duration
-	ordered chan io.ReadWriteCloser
+	ordered chan io.ReadCloser
 }
 
 func NewDelayOrderer(delay time.Duration) *DelayOrderer {
 	return &DelayOrderer{
 		delay:   delay,
-		ordered: make(chan io.ReadWriteCloser),
+		ordered: make(chan io.ReadCloser),
 	}
 }
 
-func (o *DelayOrderer) Propose(conn net.Conn) error {
+func (o *DelayOrderer) Propose(inStream io.Reader) error {
 	go func() {
 		uuid := uuid.New()
 		log.Println("ordering message ", uuid.String())
 		time.Sleep(o.delay)
-		o.ordered <- conn
+		o.ordered <- ioutil.NopCloser(inStream)
 	}()
 	return nil
 }
