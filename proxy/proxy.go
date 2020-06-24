@@ -1,7 +1,8 @@
-package main
+package proxy
 
 import (
 	"io"
+	"log"
 	"sync"
 
 	"github.com/google/uuid"
@@ -13,8 +14,8 @@ type Transporter interface {
 }
 
 type Orderer interface {
-	Propose(string, io.Reader) error
-	Ordered() <-chan io.Reader
+	Propose(R3Message) error
+	Ordered() <-chan R3Message
 }
 
 type R3Proxy struct {
@@ -36,12 +37,18 @@ func (p *R3Proxy) Run() error {
 		errCh <- p.transport.Listen(p.handle)
 	}()
 	go func() {
-		for inStream := range p.orderer.Ordered() {
-			outStream, err := p.transport.Deliver(inStream)
+		for message := range p.orderer.Ordered() {
+			outStream, err := p.transport.Deliver(message.Reader)
 			if err != nil {
 				errCh <- err
 			}
-			p.pendingClients.Load()
+			respChI, ok := p.pendingClients.Load(message.ID)
+			if !ok {
+				log.Println("response for non existing client")
+				continue
+			}
+			respCh := respChI.(chan io.Reader)
+			respCh <- outStream
 		}
 	}()
 	return <-errCh
@@ -49,7 +56,10 @@ func (p *R3Proxy) Run() error {
 
 func (p *R3Proxy) handle(reqReader io.Reader) (io.Reader, error) {
 	uuidStr := uuid.New().String()
-	err := p.orderer.Propose(uuidStr, reqReader)
+	err := p.orderer.Propose(R3Message{
+		ID:     uuidStr,
+		Reader: reqReader,
+	})
 	if err != nil {
 		return nil, err
 	}

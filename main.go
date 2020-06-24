@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"r3-proxy/order"
+	"r3-proxy/proxy"
 	"r3-proxy/transport"
 )
 
@@ -14,7 +15,7 @@ func main() {
 		log.Fatal(err.Error())
 	}
 	delayOrderer := order.NewDelayOrderer(time.Second * 2)
-	r3Proxy := NewR3Proxy(tcpTransport, delayOrderer)
+	r3Proxy := proxy.NewR3Proxy(tcpTransport, delayOrderer)
 	err = r3Proxy.Run()
 	if err != nil {
 		log.Fatal(err.Error())
