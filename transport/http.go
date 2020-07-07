@@ -3,30 +3,61 @@ package transport
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 
-	"r3-proxy/proxy"
+	r3model "r3proxy/model"
 )
 
 type HTTPTransport struct {
-	listenAddr  string
-	deliverAddr string
+	listenClientAddr string
+	listenJoinAddr   string
+	deliverAddr      string
 }
 
-func NewHTTPTransport(listenAddr, deliverAddr string) *HTTPTransport {
+func NewHTTPTransport(listenClientAddr, listenJoinAddr, deliverAddr string) *HTTPTransport {
 	return &HTTPTransport{
-		listenAddr:  listenAddr,
-		deliverAddr: deliverAddr,
+		listenClientAddr: listenClientAddr,
+		listenJoinAddr:   listenJoinAddr,
+		deliverAddr:      deliverAddr,
 	}
 }
 
-func (t *HTTPTransport) Listen(handle proxy.HandlerFunc) error {
+func (t *HTTPTransport) ListenRequest(handle r3model.RequestHandlerFunc) error {
 	http.HandleFunc("/", t.handler(handle))
-	return http.ListenAndServe(t.listenAddr, nil)
+	return http.ListenAndServe(t.listenClientAddr, nil)
+}
+
+func (t *HTTPTransport) ListenJoin(join r3model.JoinHandlerFunc) error {
+	joinMux := http.NewServeMux()
+	joinMux.HandleFunc("/join", func(w http.ResponseWriter, r *http.Request) {
+		joinReq := map[string]string{}
+		err := json.NewDecoder(r.Body).Decode(&joinReq)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		nodeID, ok := joinReq["id"]
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		joinAddr, ok := joinReq["addr"]
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		err = join(nodeID, joinAddr)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	})
+	return http.ListenAndServe(t.listenJoinAddr, joinMux)
 }
 
 func (t *HTTPTransport) Deliver(reqReader io.Reader) (io.Reader, error) {
@@ -55,17 +86,18 @@ func (t *HTTPTransport) Deliver(reqReader io.Reader) (io.Reader, error) {
 	return respBuffer, nil
 }
 
-func (t *HTTPTransport) handler(handle proxy.HandlerFunc) func(http.ResponseWriter, *http.Request) {
+func (t *HTTPTransport) handler(handle r3model.RequestHandlerFunc) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		reqBuffer := bytes.NewBuffer([]byte{})
 		err := r.Write(reqBuffer)
+		log.Println(string(reqBuffer.Bytes()))
 		if err != nil {
 			log.Println(err.Error())
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		log.Println("handling by proxy")
-		respReader, err := handle(reqBuffer)
+		respReader, err := handle(reqBuffer.Bytes())
 		log.Println("response received")
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)

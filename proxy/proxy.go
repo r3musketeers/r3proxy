@@ -1,53 +1,64 @@
 package proxy
 
 import (
+	"bytes"
 	"io"
 	"log"
 	"sync"
+
+	r3model "r3proxy/model"
 
 	"github.com/google/uuid"
 )
 
 type Transporter interface {
-	Listen(HandlerFunc) error
+	ListenRequest(r3model.RequestHandlerFunc) error
+	ListenJoin(r3model.JoinHandlerFunc) error
 	Deliver(io.Reader) (io.Reader, error)
 }
 
-type Orderer interface {
-	Propose(R3Message) error
-	Ordered() <-chan R3Message
+type AgreementAdapter interface {
+	Join(string, string) error
+	Process(r3model.R3Message) error
+	Ordered() <-chan r3model.R3Message
 }
 
 type R3Proxy struct {
 	transport Transporter
-	orderer   Orderer
+	agreement AgreementAdapter
 	clients   sync.Map
 }
 
-func NewR3Proxy(transport Transporter, orderer Orderer) *R3Proxy {
+func NewR3Proxy(transport Transporter, agreement AgreementAdapter) *R3Proxy {
 	return &R3Proxy{
 		transport: transport,
-		orderer:   orderer,
+		agreement: agreement,
 	}
 }
 
 func (p *R3Proxy) Run() error {
 	errCh := make(chan error)
 	go func() {
-		errCh <- p.transport.Listen(p.handle)
+		errCh <- p.transport.ListenRequest(p.handleRequest)
 	}()
 	go func() {
-		for message := range p.orderer.Ordered() {
-			log.Println("message ordered ", message.ID)
-			respReader, err := p.transport.Deliver(message.Reader)
+		errCh <- p.transport.ListenJoin(p.agreement.Join)
+	}()
+	go func() {
+		for message := range p.agreement.Ordered() {
+			log.Println("message ordered", message.ID)
+			log.Println("message body", message.Body)
+			respReader, err := p.transport.Deliver(bytes.NewBuffer(message.Body))
 			if err != nil || respReader == nil {
 				errCh <- err
+				return
 			}
 			respChI, ok := p.clients.Load(message.ID)
 			if !ok {
 				log.Println("response for non existing client")
 				continue
 			}
+			log.Println("returning response")
 			respCh := respChI.(chan io.Reader)
 			respCh <- respReader
 		}
@@ -55,17 +66,29 @@ func (p *R3Proxy) Run() error {
 	return <-errCh
 }
 
-func (p *R3Proxy) handle(reqReader io.Reader) (io.Reader, error) {
+func (p *R3Proxy) handleRequest(req []byte) (io.Reader, error) {
 	uuidStr := uuid.New().String()
-	err := p.orderer.Propose(R3Message{
-		ID:     uuidStr,
-		Reader: reqReader,
-	})
-	if err != nil {
+	respCh := make(chan io.Reader)
+	errCh := make(chan error)
+	p.clients.Store(uuidStr, respCh)
+	defer func() {
+		p.clients.Delete(uuidStr)
+		close(errCh)
+		close(respCh)
+	}()
+	go func() {
+		err := p.agreement.Process(r3model.R3Message{
+			ID:   uuidStr,
+			Body: req,
+		})
+		if err != nil {
+			errCh <- err
+		}
+	}()
+	select {
+	case respReader := <-respCh:
+		return respReader, nil
+	case err := <-errCh:
 		return nil, err
 	}
-	respCh := make(chan io.Reader)
-	p.clients.Store(uuidStr, respCh)
-	log.Println("stored client ", uuidStr)
-	return <-respCh, nil
 }

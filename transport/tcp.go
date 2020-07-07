@@ -7,7 +7,7 @@ import (
 	"log"
 	"net"
 
-	"r3-proxy/proxy"
+	r3model "r3proxy/model"
 )
 
 type TCPTransport struct {
@@ -26,19 +26,20 @@ func NewTCPTransport(listenAddr, deliverAddr string) (*TCPTransport, error) {
 	}, nil
 }
 
-func (t *TCPTransport) Listen(handle proxy.HandlerFunc) error {
+func (t *TCPTransport) Listen(handle r3model.RequestHandlerFunc) error {
 	for {
 		conn, err := t.listener.Accept()
 		if err != nil {
 			return err
 		}
 		go func() {
-			reqPayload, err := ioutil.ReadAll(conn)
+			req, err := ioutil.ReadAll(conn)
 			if err != nil {
 				log.Println(err.Error())
 				return
 			}
-			respReader, err := handle(bytes.NewBuffer(reqPayload))
+			log.Println(string(req))
+			respReader, err := handle(req)
 			if err != nil {
 				log.Println(err.Error())
 				conn.Close()
@@ -53,15 +54,17 @@ func (t *TCPTransport) Listen(handle proxy.HandlerFunc) error {
 	}
 }
 
-func (t *TCPTransport) Deliver(inStream io.Reader) (io.Reader, error) {
+func (t *TCPTransport) Deliver(reqReader io.Reader) (io.Reader, error) {
 	conn, err := net.Dial("tcp", t.deliverAddr)
 	if err != nil {
 		return nil, err
 	}
-	_, err = io.Copy(conn, inStream)
+	log.Println("connected to service")
+	_, err = io.Copy(conn, reqReader)
 	if err != nil {
 		return nil, err
 	}
+	log.Println("delivered message")
 	outStream := bytes.NewBuffer([]byte{})
 	_, err = io.Copy(outStream, conn)
 	if err != nil {
