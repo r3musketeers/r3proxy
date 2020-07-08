@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"net/url"
 
-	r3model "r3proxy/model"
+	r3proxy "r3proxy/proxy"
 )
 
 type HTTPTransport struct {
@@ -32,7 +32,7 @@ func NewHTTPTransport(listenClientAddr, listenJoinAddr, deliverAddr string) *HTT
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-func (t *HTTPTransport) ListenClient(handle r3model.ClientHandlerFunc) error {
+func (t *HTTPTransport) ListenClient(handle r3proxy.ClientHandlerFunc) error {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		reqBuffer := bytes.NewBuffer([]byte{})
 		err := r.Write(reqBuffer)
@@ -60,7 +60,7 @@ func (t *HTTPTransport) ListenClient(handle r3model.ClientHandlerFunc) error {
 	return http.ListenAndServe(t.listenClientAddr, nil)
 }
 
-func (t *HTTPTransport) ListenJoin(join r3model.JoinHandlerFunc) error {
+func (t *HTTPTransport) ListenJoin(join r3proxy.JoinHandlerFunc) error {
 	joinMux := http.NewServeMux()
 	joinMux.HandleFunc("/join", func(w http.ResponseWriter, r *http.Request) {
 		log.Println("received join request")

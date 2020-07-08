@@ -1,4 +1,4 @@
-package model
+package proxy
 
 type R3Message struct {
 	ID   string

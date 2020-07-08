@@ -5,26 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
-
-	r3model "r3proxy/model"
 )
-
-type Transporter interface {
-	ListenClient(r3model.ClientHandlerFunc) error
-	ListenJoin(r3model.JoinHandlerFunc) error
-	Deliver([]byte) ([]byte, error)
-	SendJoinRequest(string, []byte) error
-}
-
-type AgreementAdapter interface {
-	NodeID() string
-	Address() string
-	SetHistoryGenerator(r3model.HistoryGeneratorFunc)
-	SetHistoryPopulator(r3model.HistoryPopulatorFunc)
-	Join(string, string) error
-	Process(r3model.R3Message) error
-	Ordered() <-chan r3model.R3Message
-}
 
 type R3Proxy struct {
 	transport Transporter
@@ -61,7 +42,7 @@ func (p *R3Proxy) Run(joinAddr string) error {
 	p.agreement.SetHistoryPopulator(p.populateHistory)
 
 	go func() {
-		errCh <- p.transport.ListenClient(p.handleRequest)
+		errCh <- p.transport.ListenClient(p.handleClient)
 	}()
 
 	go func() {
@@ -90,7 +71,7 @@ func (p *R3Proxy) Run(joinAddr string) error {
 
 // Unexported methods
 
-func (p *R3Proxy) handleRequest(req []byte) ([]byte, error) {
+func (p *R3Proxy) handleClient(req []byte) ([]byte, error) {
 	hash := sha256.New()
 	_, err := hash.Write(req)
 	if err != nil {
@@ -112,7 +93,7 @@ func (p *R3Proxy) handleRequest(req []byte) ([]byte, error) {
 		close(respCh)
 	}()
 	go func() {
-		err := p.agreement.Process(r3model.R3Message{
+		err := p.agreement.Process(R3Message{
 			ID:   hashSum,
 			Body: req,
 		})

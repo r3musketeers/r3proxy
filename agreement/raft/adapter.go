@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
-	r3model "r3proxy/model"
+	r3proxy "r3proxy/proxy"
 
 	"github.com/hashicorp/raft"
 	raftboltdb "github.com/hashicorp/raft-boltdb"
@@ -23,7 +23,7 @@ type RaftAgreementAdapter struct {
 	address         string
 	raft            *raft.Raft
 	proposalTimeout time.Duration
-	orderedCh       chan r3model.R3Message
+	orderedCh       chan r3proxy.R3Message
 	snapshot        func() *RaftSnapshot
 	restore         func(*RaftSnapshot) error
 }
@@ -73,7 +73,7 @@ func NewRaftAgreementAdapter(
 		nodeID:          nodeID,
 		address:         addrStr,
 		proposalTimeout: proposalTimeout,
-		orderedCh:       make(chan r3model.R3Message),
+		orderedCh:       make(chan r3proxy.R3Message),
 	}
 
 	raftInstance, err := raft.NewRaft(
@@ -116,14 +116,14 @@ func (a *RaftAgreementAdapter) Address() string {
 	return a.address
 }
 
-func (a *RaftAgreementAdapter) SetHistoryGenerator(generateHistory r3model.HistoryGeneratorFunc) {
+func (a *RaftAgreementAdapter) SetHistoryGenerator(generateHistory r3proxy.HistoryGeneratorFunc) {
 	a.snapshot = func() *RaftSnapshot {
 		snapshot := RaftSnapshot(generateHistory())
 		return &snapshot
 	}
 }
 
-func (a *RaftAgreementAdapter) SetHistoryPopulator(populateHistory r3model.HistoryPopulatorFunc) {
+func (a *RaftAgreementAdapter) SetHistoryPopulator(populateHistory r3proxy.HistoryPopulatorFunc) {
 	a.restore = func(snapshot *RaftSnapshot) error {
 		populateHistory(map[string][]byte(*snapshot))
 		return nil
@@ -195,7 +195,7 @@ func (s *RaftAgreementAdapter) Join(nodeID, addr string) error {
 	return nil
 }
 
-func (a *RaftAgreementAdapter) Process(message r3model.R3Message) error {
+func (a *RaftAgreementAdapter) Process(message r3proxy.R3Message) error {
 	if a.raft.State() != raft.Leader {
 		return errors.New("not a raft leader")
 	}
@@ -208,7 +208,7 @@ func (a *RaftAgreementAdapter) Process(message r3model.R3Message) error {
 	return raftFuture.Error()
 }
 
-func (a *RaftAgreementAdapter) Ordered() <-chan r3model.R3Message {
+func (a *RaftAgreementAdapter) Ordered() <-chan r3proxy.R3Message {
 	return a.orderedCh
 }
 
@@ -220,7 +220,7 @@ func (a *RaftAgreementAdapter) Ordered() <-chan r3model.R3Message {
 
 func (a *RaftAgreementAdapter) Apply(logEntry *raft.Log) interface{} {
 	// TODO: Add to local cache
-	var message r3model.R3Message
+	var message r3proxy.R3Message
 	buffer := bytes.NewReader(logEntry.Data)
 	err := gob.NewDecoder(buffer).Decode(&message)
 	if err != nil {
