@@ -1,7 +1,5 @@
 package model
 
-import "io"
-
-type RequestHandlerFunc func([]byte) (io.Reader, error)
+type ClientHandlerFunc func([]byte) ([]byte, error)
 
 type JoinHandlerFunc func(string, string) error

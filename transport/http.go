@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -27,14 +26,44 @@ func NewHTTPTransport(listenClientAddr, listenJoinAddr, deliverAddr string) *HTT
 	}
 }
 
-func (t *HTTPTransport) ListenRequest(handle r3model.RequestHandlerFunc) error {
-	http.HandleFunc("/", t.handler(handle))
+////////////////////////////////////////////////////////////////////////////////
+//
+// r3proxy.Transporter interface implementation
+//
+////////////////////////////////////////////////////////////////////////////////
+
+func (t *HTTPTransport) ListenClient(handle r3model.ClientHandlerFunc) error {
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		reqBuffer := bytes.NewBuffer([]byte{})
+		err := r.Write(reqBuffer)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		respData, err := handle(reqBuffer.Bytes())
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		respReader := bytes.NewReader(respData)
+		resp, err := http.ReadResponse(bufio.NewReader(respReader), r)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		err = resp.Write(w)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	})
 	return http.ListenAndServe(t.listenClientAddr, nil)
 }
 
 func (t *HTTPTransport) ListenJoin(join r3model.JoinHandlerFunc) error {
 	joinMux := http.NewServeMux()
 	joinMux.HandleFunc("/join", func(w http.ResponseWriter, r *http.Request) {
+		log.Println("received join request")
 		joinReq := map[string]string{}
 		err := json.NewDecoder(r.Body).Decode(&joinReq)
 		if err != nil {
@@ -46,6 +75,7 @@ func (t *HTTPTransport) ListenJoin(join r3model.JoinHandlerFunc) error {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		log.Println("NODE ID", nodeID)
 		joinAddr, ok := joinReq["addr"]
 		if !ok {
 			w.WriteHeader(http.StatusBadRequest)
@@ -53,6 +83,7 @@ func (t *HTTPTransport) ListenJoin(join r3model.JoinHandlerFunc) error {
 		}
 		err = join(nodeID, joinAddr)
 		if err != nil {
+			log.Println(err.Error())
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -60,7 +91,8 @@ func (t *HTTPTransport) ListenJoin(join r3model.JoinHandlerFunc) error {
 	return http.ListenAndServe(t.listenJoinAddr, joinMux)
 }
 
-func (t *HTTPTransport) Deliver(reqReader io.Reader) (io.Reader, error) {
+func (t *HTTPTransport) Deliver(reqData []byte) ([]byte, error) {
+	reqReader := bytes.NewReader(reqData)
 	req, err := http.ReadRequest(bufio.NewReader(reqReader))
 	if err != nil {
 		return nil, err
@@ -75,43 +107,23 @@ func (t *HTTPTransport) Deliver(reqReader io.Reader) (io.Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	log.Println("request sent")
 	respBuffer := bytes.NewBuffer([]byte{})
 	err = resp.Write(respBuffer)
-	log.Println("response received")
-	log.Println(string(respBuffer.Bytes()))
 	if err != nil {
 		return nil, err
 	}
-	return respBuffer, nil
+	return respBuffer.Bytes(), nil
 }
 
-func (t *HTTPTransport) handler(handle r3model.RequestHandlerFunc) func(http.ResponseWriter, *http.Request) {
-	return func(w http.ResponseWriter, r *http.Request) {
-		reqBuffer := bytes.NewBuffer([]byte{})
-		err := r.Write(reqBuffer)
-		log.Println(string(reqBuffer.Bytes()))
-		if err != nil {
-			log.Println(err.Error())
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		log.Println("handling by proxy")
-		respReader, err := handle(reqBuffer.Bytes())
-		log.Println("response received")
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		resp, err := http.ReadResponse(bufio.NewReader(respReader), r)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		err = resp.Write(w)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
+func (t *HTTPTransport) SendJoinRequest(joinAddr string, joinBody []byte) error {
+	resp, err := http.Post(
+		fmt.Sprintf("http://%s/join", joinAddr),
+		"application-type/json",
+		bytes.NewReader(joinBody),
+	)
+	if err != nil {
+		return err
 	}
+	resp.Body.Close()
+	return nil
 }

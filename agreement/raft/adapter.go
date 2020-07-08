@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -11,7 +12,6 @@ import (
 	"path/filepath"
 	"time"
 
-	r3errors "r3proxy/errors"
 	r3model "r3proxy/model"
 
 	"github.com/hashicorp/raft"
@@ -19,9 +19,13 @@ import (
 )
 
 type RaftAgreementAdapter struct {
+	nodeID          string
+	address         string
 	raft            *raft.Raft
 	proposalTimeout time.Duration
 	orderedCh       chan r3model.R3Message
+	snapshot        func() *RaftSnapshot
+	restore         func(*RaftSnapshot) error
 }
 
 func NewRaftAgreementAdapter(
@@ -31,7 +35,7 @@ func NewRaftAgreementAdapter(
 	baseDir string,
 	snapshotRetain int,
 	proposalTimeout time.Duration,
-	joinAddrStr string,
+	enableSingle bool,
 ) (*RaftAgreementAdapter, error) {
 	config := raft.DefaultConfig()
 	config.LocalID = raft.ServerID(nodeID)
@@ -66,6 +70,8 @@ func NewRaftAgreementAdapter(
 	}
 
 	raftAdapter := &RaftAgreementAdapter{
+		nodeID:          nodeID,
+		address:         addrStr,
 		proposalTimeout: proposalTimeout,
 		orderedCh:       make(chan r3model.R3Message),
 	}
@@ -84,7 +90,7 @@ func NewRaftAgreementAdapter(
 
 	raftAdapter.raft = raftInstance
 
-	if joinAddrStr == "" {
+	if enableSingle {
 		configSingle := raft.Configuration{
 			Servers: []raft.Server{
 				{ID: config.LocalID, Address: transport.LocalAddr()},
@@ -98,35 +104,98 @@ func NewRaftAgreementAdapter(
 
 ////////////////////////////////////////////////////////////////////////////////
 //
-// r3Proxy.ConsensusAdapter interface implementation
+// r3proxy.ConsensusAdapter interface implementation
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-func (a *RaftAgreementAdapter) Join(nodeID, addrStr string) error {
-	configFuture := a.raft.GetConfiguration()
-	err := configFuture.Error()
-	if err != nil {
+func (a *RaftAgreementAdapter) NodeID() string {
+	return a.nodeID
+}
+
+func (a *RaftAgreementAdapter) Address() string {
+	return a.address
+}
+
+func (a *RaftAgreementAdapter) SetHistoryGenerator(generateHistory r3model.HistoryGeneratorFunc) {
+	a.snapshot = func() *RaftSnapshot {
+		snapshot := RaftSnapshot(generateHistory())
+		return &snapshot
+	}
+}
+
+func (a *RaftAgreementAdapter) SetHistoryPopulator(populateHistory r3model.HistoryPopulatorFunc) {
+	a.restore = func(snapshot *RaftSnapshot) error {
+		populateHistory(map[string][]byte(*snapshot))
+		return nil
+	}
+}
+
+// func (a *RaftAgreementAdapter) Join(nodeID, addrStr string) error {
+// 	log.Println("joining node", nodeID, addrStr)
+// 	configFuture := a.raft.GetConfiguration()
+// 	err := configFuture.Error()
+// 	if err != nil {
+// 		return err
+// 	}
+// 	for _, server := range configFuture.Configuration().Servers {
+// 		if server.ID == raft.ServerID(nodeID) || server.Address == raft.ServerAddress(addrStr) {
+// 			if server.ID == raft.ServerID(nodeID) && server.Address == raft.ServerAddress(addrStr) {
+// 				log.Printf("node %s at %s already a member, ignoring request", nodeID, addrStr)
+// 				return nil
+// 			}
+// 			removeFuture := a.raft.RemoveServer(server.ID, 0, 0)
+// 			err = removeFuture.Error()
+// 			if err != nil {
+// 				return err
+// 			}
+// 		}
+// 	}
+// 	log.Println("adding voter")
+// 	addVoterFuture := a.raft.AddVoter(raft.ServerID(nodeID), raft.ServerAddress(addrStr), 0, 0)
+// 	err = addVoterFuture.Error()
+// 	if err != nil {
+// 		log.Println(err.Error())
+// 		return err
+// 	}
+// 	return nil
+// }
+
+func (s *RaftAgreementAdapter) Join(nodeID, addr string) error {
+	log.Printf("received join request for remote node %s at %s", nodeID, addr)
+
+	configFuture := s.raft.GetConfiguration()
+	if err := configFuture.Error(); err != nil {
+		log.Printf("failed to get raft configuration: %v", err)
 		return err
 	}
-	for _, server := range configFuture.Configuration().Servers {
-		if server.ID == raft.ServerID(nodeID) || server.Address == raft.ServerAddress(addrStr) {
-			if server.ID == raft.ServerID(nodeID) && server.Address == raft.ServerAddress(addrStr) {
-				log.Printf("node %s at %s already a member, ignoring request", nodeID, addrStr)
+
+	for _, srv := range configFuture.Configuration().Servers {
+		// If a node already exists with either the joining node's ID or address,
+		// that node may need to be removed from the config first.
+		if srv.ID == raft.ServerID(nodeID) || srv.Address == raft.ServerAddress(addr) {
+			// However if *both* the ID and the address are the same, then nothing -- not even
+			// a join operation -- is needed.
+			if srv.Address == raft.ServerAddress(addr) && srv.ID == raft.ServerID(nodeID) {
+				log.Printf("node %s at %s already member of cluster, ignoring join request", nodeID, addr)
 				return nil
 			}
-			removeFuture := a.raft.RemoveServer(server.ID, 0, 0)
-			err = removeFuture.Error()
-			if err != nil {
-				return err
+
+			future := s.raft.RemoveServer(srv.ID, 0, 0)
+			if err := future.Error(); err != nil {
+				return fmt.Errorf("error removing existing node %s at %s: %s", nodeID, addr, err)
 			}
 		}
 	}
-	addVoterFuture := a.raft.AddVoter(raft.ServerID(nodeID), raft.ServerAddress(addrStr), 0, 0)
-	return addVoterFuture.Error()
+
+	f := s.raft.AddVoter(raft.ServerID(nodeID), raft.ServerAddress(addr), 0, 0)
+	if f.Error() != nil {
+		return f.Error()
+	}
+	log.Printf("node %s at %s joined successfully", nodeID, addr)
+	return nil
 }
 
 func (a *RaftAgreementAdapter) Process(message r3model.R3Message) error {
-	// TODO: manage non leader request handling
 	if a.raft.State() != raft.Leader {
 		return errors.New("not a raft leader")
 	}
@@ -150,6 +219,7 @@ func (a *RaftAgreementAdapter) Ordered() <-chan r3model.R3Message {
 ////////////////////////////////////////////////////////////////////////////////
 
 func (a *RaftAgreementAdapter) Apply(logEntry *raft.Log) interface{} {
+	// TODO: Add to local cache
 	var message r3model.R3Message
 	buffer := bytes.NewReader(logEntry.Data)
 	err := gob.NewDecoder(buffer).Decode(&message)
@@ -161,10 +231,14 @@ func (a *RaftAgreementAdapter) Apply(logEntry *raft.Log) interface{} {
 }
 
 func (a *RaftAgreementAdapter) Snapshot() (raft.FSMSnapshot, error) {
-	// TODO: somehow get from proxy something to be used as snapshot
-	return &raft.MockSnapshot{}, nil
+	return a.snapshot(), nil
 }
 
-func (a RaftAgreementAdapter) Restore(io.ReadCloser) error {
-	return r3errors.NotImplementedYetError("RaftAgreementAdapter.Restore")
+func (a RaftAgreementAdapter) Restore(snapshotReader io.ReadCloser) error {
+	snapshot := &RaftSnapshot{}
+	err := gob.NewDecoder(snapshotReader).Decode(snapshot)
+	if err != nil {
+		return err
+	}
+	return a.restore(snapshot)
 }

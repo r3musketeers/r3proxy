@@ -1,23 +1,26 @@
 package proxy
 
 import (
-	"bytes"
-	"io"
+	"crypto/sha256"
+	"encoding/json"
 	"log"
 	"sync"
 
 	r3model "r3proxy/model"
-
-	"github.com/google/uuid"
 )
 
 type Transporter interface {
-	ListenRequest(r3model.RequestHandlerFunc) error
+	ListenClient(r3model.ClientHandlerFunc) error
 	ListenJoin(r3model.JoinHandlerFunc) error
-	Deliver(io.Reader) (io.Reader, error)
+	Deliver([]byte) ([]byte, error)
+	SendJoinRequest(string, []byte) error
 }
 
 type AgreementAdapter interface {
+	NodeID() string
+	Address() string
+	SetHistoryGenerator(r3model.HistoryGeneratorFunc)
+	SetHistoryPopulator(r3model.HistoryPopulatorFunc)
 	Join(string, string) error
 	Process(r3model.R3Message) error
 	Ordered() <-chan r3model.R3Message
@@ -27,6 +30,7 @@ type R3Proxy struct {
 	transport Transporter
 	agreement AgreementAdapter
 	clients   sync.Map
+	history   sync.Map
 }
 
 func NewR3Proxy(transport Transporter, agreement AgreementAdapter) *R3Proxy {
@@ -36,49 +40,80 @@ func NewR3Proxy(transport Transporter, agreement AgreementAdapter) *R3Proxy {
 	}
 }
 
-func (p *R3Proxy) Run() error {
+func (p *R3Proxy) Run(joinAddr string) error {
+	if joinAddr != "" {
+		joinBody, err := json.Marshal(map[string]string{
+			"id":   p.agreement.NodeID(),
+			"addr": p.agreement.Address(),
+		})
+		if err != nil {
+			return err
+		}
+		err = p.transport.SendJoinRequest(joinAddr, joinBody)
+		if err != nil {
+			return err
+		}
+	}
+
 	errCh := make(chan error)
+
+	p.agreement.SetHistoryGenerator(p.generateHistory)
+	p.agreement.SetHistoryPopulator(p.populateHistory)
+
 	go func() {
-		errCh <- p.transport.ListenRequest(p.handleRequest)
+		errCh <- p.transport.ListenClient(p.handleRequest)
 	}()
+
 	go func() {
 		errCh <- p.transport.ListenJoin(p.agreement.Join)
 	}()
+
 	go func() {
 		for message := range p.agreement.Ordered() {
-			log.Println("message ordered", message.ID)
-			log.Println("message body", message.Body)
-			respReader, err := p.transport.Deliver(bytes.NewBuffer(message.Body))
-			if err != nil || respReader == nil {
-				errCh <- err
+			resp, err := p.transport.Deliver(message.Body)
+			if err != nil {
+				log.Println(err.Error())
 				return
 			}
-			respChI, ok := p.clients.Load(message.ID)
+			p.history.Store(message.ID, resp)
+			iRespCh, ok := p.clients.Load(message.ID)
 			if !ok {
-				log.Println("response for non existing client")
 				continue
 			}
-			log.Println("returning response")
-			respCh := respChI.(chan io.Reader)
-			respCh <- respReader
+			respCh := iRespCh.(chan []byte)
+			respCh <- resp
 		}
 	}()
+
 	return <-errCh
 }
 
-func (p *R3Proxy) handleRequest(req []byte) (io.Reader, error) {
-	uuidStr := uuid.New().String()
-	respCh := make(chan io.Reader)
+// Unexported methods
+
+func (p *R3Proxy) handleRequest(req []byte) ([]byte, error) {
+	hash := sha256.New()
+	_, err := hash.Write(req)
+	if err != nil {
+		return nil, err
+	}
+	hashSum := string(hash.Sum(nil))
+
+	iResp, ok := p.history.Load(hashSum)
+	if ok {
+		return iResp.([]byte), nil
+	}
+
+	respCh := make(chan []byte)
 	errCh := make(chan error)
-	p.clients.Store(uuidStr, respCh)
+	p.clients.Store(hashSum, respCh)
 	defer func() {
-		p.clients.Delete(uuidStr)
+		p.clients.Delete(hashSum)
 		close(errCh)
 		close(respCh)
 	}()
 	go func() {
 		err := p.agreement.Process(r3model.R3Message{
-			ID:   uuidStr,
+			ID:   hashSum,
 			Body: req,
 		})
 		if err != nil {
@@ -86,9 +121,25 @@ func (p *R3Proxy) handleRequest(req []byte) (io.Reader, error) {
 		}
 	}()
 	select {
-	case respReader := <-respCh:
-		return respReader, nil
+	case resp := <-respCh:
+		return resp, nil
 	case err := <-errCh:
 		return nil, err
+	}
+}
+
+func (p *R3Proxy) generateHistory() map[string][]byte {
+	history := map[string][]byte{}
+	p.history.Range(func(iKey, iValue interface{}) bool {
+		key := iKey.(string)
+		history[key] = iValue.([]byte)
+		return true
+	})
+	return history
+}
+
+func (p *R3Proxy) populateHistory(history map[string][]byte) {
+	for key, value := range history {
+		p.history.Store(key, value)
 	}
 }

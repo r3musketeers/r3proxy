@@ -30,6 +30,7 @@ var (
 )
 
 func main() {
+	pflag.Parse()
 	if pflag.NArg() == 0 {
 		log.Fatal("node id not specified")
 	}
@@ -44,11 +45,11 @@ func main() {
 		"data/raft/"+nodeID,
 		2,
 		10*time.Second,
-		*joinAddr,
+		*joinAddr == "",
 	)
 
 	r3Proxy := r3proxy.NewR3Proxy(httpTransport, raftAgreement)
-	err = r3Proxy.Run()
+	err = r3Proxy.Run(*joinAddr)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
