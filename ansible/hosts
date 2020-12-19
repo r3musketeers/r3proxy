@@ -1,0 +1,20 @@
+[masters]
+master ansible_host=pc722.emulab.net ansible_user=renantf
+
+[workers]
+worker1 ansible_host=pc724.emulab.net ansible_user=renantf
+worker2 ansible_host=pc741.emulab.net ansible_user=renantf
+worker3 ansible_host=pc742.emulab.net ansible_user=renantf
+worker4 ansible_host=pc744.emulab.net ansible_user=renantf
+worker5 ansible_host=pc730.emulab.net ansible_user=renantf
+worker6 ansible_host=pc721.emulab.net ansible_user=renantf
+worker7 ansible_host=pc723.emulab.net ansible_user=renantf
+worker8 ansible_host=pc755.emulab.net ansible_user=renantf
+worker9 ansible_host=pc737.emulab.net ansible_user=renantf
+worker10 ansible_host=pc726.emulab.net ansible_user=renantf
+worker11 ansible_host=pc736.emulab.net ansible_user=renantf
+worker12 ansible_host=pc738.emulab.net ansible_user=renantf
+worker13 ansible_host=pc751.emulab.net ansible_user=renantf
+
+[all:vars]
+ansible_python_interpreter=/usr/bin/python3

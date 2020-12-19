@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: r3
+  labels:
+    name: r3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: r3httpkv
+  namespace: r3
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: r3httpkv
+  template:
+    metadata:
+      labels:
+        app: r3httpkv
+    spec:
+      containers:
+        - name: r3httpkv
+          image: r3musketeers/r3httpkv
+          args: [ "--log", "/tmp/throughput.log" ]
+          ports:
+            - containerPort: 11010
+      nodeSelector:
+        role: server
+      # affinity:
+      #   podAntiAffinity:
+      #     requiredDuringSchedulingIgnoredDuringExecution:
+      #       - labelSelector:
+      #           matchExpressions:
+      #             - key: name
+      #               operator: In
+      #               values: [ "r3httpkv" ]
+      #         topologyKey: failure-domain.beta.kubernetes.io/zone
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: r3httpkv
+  namespace: r3
+spec:
+  selector:
+    app: r3httpkv
+  type: NodePort
+  ports:
+    - port: 8080
+      targetPort: 11010
+      nodePort: 30001
